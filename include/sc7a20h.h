@@ -1,180 +1,199 @@
-#ifndef SC7A20H_H
-#define SC7A20H_H
+/*
+ * SPDX-FileCopyrightText: 2026 mydazy
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * SC7A20H 3-axis accelerometer driver (Silan Microelectronics).
+ * Register-compatible with ST LIS2DH12 / LIS3DH.
+ */
 
+#pragma once
+
+#include <stdbool.h>
+#include <stdint.h>
+#include <stddef.h>
 #include <driver/i2c_master.h>
 #include <driver/gpio.h>
 #include <esp_err.h>
-#include <functional>
-#include <cstdint>
 
-/**
- * @brief SC7A20H 3-axis accelerometer driver (Silan Microelectronics).
- *
- * Register-compatible with ST LIS2DH12 / LIS3DH.
- * I2C address: 0x18 (SA0 = GND) or 0x19 (SA0 = VCC, default).
- *
- * Capabilities: acceleration readout, motion-detect interrupt,
- * deep-sleep wakeup, low-power mode.
- */
+#ifdef __cplusplus
+extern "C" {
+#endif
 
-/// Raw 3-axis sample (12-bit, left-aligned in source registers; this struct
-/// already holds the right-shifted, sign-extended value).
-struct Sc7a20hRawAcce {
+/* ========================================================================
+ * Public types
+ * ====================================================================== */
+
+/// Opaque handle to an SC7A20H driver instance.
+typedef struct sc7a20h_dev_t *sc7a20h_handle_t;
+
+/// Raw 3-axis sample (12-bit, sign-extended after right-shift).
+typedef struct {
     int16_t x;
     int16_t y;
     int16_t z;
-};
+} sc7a20h_raw_acce_t;
 
 /// Scaled 3-axis acceleration in milli-g (mg).
-struct Sc7a20hAcce {
+typedef struct {
     float x;
     float y;
     float z;
-};
+} sc7a20h_acce_t;
 
 /// Full-scale range selection.
-enum class Sc7a20hRange : uint8_t {
-    kRange2G  = 0x00,  ///< +/- 2 g (default on power-up)
-    kRange4G  = 0x10,  ///< +/- 4 g
-    kRange8G  = 0x20,  ///< +/- 8 g
-    kRange16G = 0x30,  ///< +/- 16 g
-};
+typedef enum {
+    SC7A20H_RANGE_2G  = 0x00,  ///< +/- 2 g  (default at power-up)
+    SC7A20H_RANGE_4G  = 0x10,  ///< +/- 4 g
+    SC7A20H_RANGE_8G  = 0x20,  ///< +/- 8 g
+    SC7A20H_RANGE_16G = 0x30,  ///< +/- 16 g
+} sc7a20h_range_t;
 
 /// Output data rate.
-enum class Sc7a20hOdr : uint8_t {
-    kPowerDown = 0x00,  ///< Power-down
-    kOdr1Hz    = 0x10,  ///< 1   Hz (ultra-low power)
-    kOdr10Hz   = 0x20,  ///< 10  Hz (low power)
-    kOdr25Hz   = 0x30,  ///< 25  Hz
-    kOdr50Hz   = 0x40,  ///< 50  Hz
-    kOdr100Hz  = 0x50,  ///< 100 Hz (driver default)
-    kOdr200Hz  = 0x60,  ///< 200 Hz
-    kOdr400Hz  = 0x70,  ///< 400 Hz
-};
+typedef enum {
+    SC7A20H_ODR_POWER_DOWN = 0x00,
+    SC7A20H_ODR_1HZ        = 0x10,  ///< Ultra-low power
+    SC7A20H_ODR_10HZ       = 0x20,  ///< Low power
+    SC7A20H_ODR_25HZ       = 0x30,
+    SC7A20H_ODR_50HZ       = 0x40,
+    SC7A20H_ODR_100HZ      = 0x50,  ///< Driver default
+    SC7A20H_ODR_200HZ      = 0x60,
+    SC7A20H_ODR_400HZ      = 0x70,
+} sc7a20h_odr_t;
+
+/// Constructor configuration.
+typedef struct {
+    uint8_t i2c_addr;       ///< 7-bit I2C address (typically 0x18 or 0x19)
+    sc7a20h_range_t range;  ///< Initial full-scale range
+    sc7a20h_odr_t   odr;    ///< Initial output data rate
+} sc7a20h_config_t;
+
+#define SC7A20H_DEFAULT_CONFIG()        \
+    {                                   \
+        .i2c_addr = 0x19,               \
+        .range    = SC7A20H_RANGE_4G,   \
+        .odr      = SC7A20H_ODR_100HZ,  \
+    }
 
 /// Motion-detection configuration.
-struct Sc7a20hMotionConfig {
-    uint8_t threshold = 0x08;  ///< Threshold (step = full-scale/128, default ~250 mg @ +/-4 g)
-    uint8_t duration  = 0x02;  ///< Duration  (step = 1/ODR samples)
-    bool    enable_x  = true;  ///< Detect motion on X axis
-    bool    enable_y  = true;  ///< Detect motion on Y axis
-    bool    enable_z  = true;  ///< Detect motion on Z axis
-};
+typedef struct {
+    uint8_t threshold;   ///< Threshold (step = full-scale/128, e.g. 0x08 ~= 250 mg @ 4 g)
+    uint8_t duration;    ///< Duration  (step = 1/ODR samples)
+    bool    enable_x;    ///< Detect motion on X axis
+    bool    enable_y;    ///< Detect motion on Y axis
+    bool    enable_z;    ///< Detect motion on Z axis
+} sc7a20h_motion_config_t;
 
-class Sc7a20h {
-public:
-    using WakeupCallback = std::function<void()>;
+#define SC7A20H_DEFAULT_MOTION_CONFIG() \
+    {                                   \
+        .threshold = 0x08,              \
+        .duration  = 0x02,              \
+        .enable_x  = true,              \
+        .enable_y  = true,              \
+        .enable_z  = true,              \
+    }
 
-    /**
-     * @brief Construct and register the I2C device.
-     * @param i2c_bus I2C master bus handle.
-     * @param addr    7-bit I2C address (default 0x19).
-     */
-    Sc7a20h(i2c_master_bus_handle_t i2c_bus, uint8_t addr = 0x19);
-    ~Sc7a20h();
+/// User-space callback fired when a motion event is observed (debounced).
+/// Runs in caller context, NOT from ISR.
+typedef void (*sc7a20h_wakeup_cb_t)(void *user_ctx);
 
-    Sc7a20h(const Sc7a20h&) = delete;
-    Sc7a20h& operator=(const Sc7a20h&) = delete;
+/* ========================================================================
+ * Lifecycle
+ * ====================================================================== */
 
-    // ===================== Device management =====================
+/**
+ * @brief Create and initialise an SC7A20H driver instance.
+ *
+ * Verifies WHO_AM_I, configures range / ODR, returns a handle on success.
+ *
+ * @param[in]  i2c_bus  Existing I2C master bus handle.
+ * @param[in]  cfg      Driver configuration. Use @c SC7A20H_DEFAULT_CONFIG().
+ * @param[out] out      Receives the handle on success.
+ *
+ * @return ESP_OK                on success;
+ *         ESP_ERR_INVALID_ARG   if a parameter is NULL;
+ *         ESP_ERR_NOT_FOUND     if WHO_AM_I mismatch;
+ *         ESP_ERR_NO_MEM        on allocation failure;
+ *         underlying I2C error otherwise.
+ */
+esp_err_t sc7a20h_create(i2c_master_bus_handle_t i2c_bus,
+                         const sc7a20h_config_t *cfg,
+                         sc7a20h_handle_t *out);
 
-    /**
-     * @brief Verify WHO_AM_I and apply default configuration.
-     * @param range Full-scale range (default +/- 4 g).
-     * @param odr   Output data rate (default 100 Hz).
-     * @return ESP_OK on success;
-     *         ESP_ERR_NOT_FOUND if WHO_AM_I mismatch;
-     *         ESP_ERR_INVALID_STATE if I2C device registration failed.
-     */
-    esp_err_t Initialize(Sc7a20hRange range = Sc7a20hRange::kRange4G,
-                         Sc7a20hOdr odr = Sc7a20hOdr::kOdr100Hz);
+/**
+ * @brief Power down the device and release all resources.
+ */
+esp_err_t sc7a20h_del(sc7a20h_handle_t h);
 
-    /// Whether @ref Initialize() has succeeded.
-    bool IsInitialized() const { return initialized_; }
+/* ========================================================================
+ * Data readout
+ * ====================================================================== */
 
-    // ===================== Data readout ==========================
+/// Read raw acceleration sample (12-bit signed, already right-shifted).
+esp_err_t sc7a20h_get_raw_acce(sc7a20h_handle_t h, sc7a20h_raw_acce_t *raw);
 
-    /**
-     * @brief Read raw acceleration sample.
-     * @param[out] raw Raw value (12-bit signed, already right-shifted).
-     */
-    esp_err_t GetRawAcce(Sc7a20hRawAcce& raw);
+/// Read acceleration scaled to milli-g.
+esp_err_t sc7a20h_get_acce(sc7a20h_handle_t h, sc7a20h_acce_t *acce);
 
-    /**
-     * @brief Read acceleration scaled to milli-g.
-     * @param[out] acce Scaled value.
-     */
-    esp_err_t GetAcce(Sc7a20hAcce& acce);
+/* ========================================================================
+ * Motion detection (INT1)
+ * ====================================================================== */
 
-    // ===================== Motion detection ======================
+/**
+ * @brief Enable or disable the motion-detect interrupt on INT1.
+ * @param h       Driver handle.
+ * @param enable  true to enable, false to disable.
+ * @param mcfg    Detection parameters; pass NULL to use defaults.
+ */
+esp_err_t sc7a20h_set_motion_detection(sc7a20h_handle_t h,
+                                       bool enable,
+                                       const sc7a20h_motion_config_t *mcfg);
 
-    /**
-     * @brief Enable or disable the motion-detect interrupt on INT1.
-     * @param enable true to enable, false to disable.
-     * @param config Detection parameters; pass nullptr to use defaults.
-     */
-    esp_err_t SetMotionDetection(bool enable, const Sc7a20hMotionConfig* config = nullptr);
+/// Install a user-space callback for motion events.
+/// Pass cb=NULL to clear.
+esp_err_t sc7a20h_set_wakeup_callback(sc7a20h_handle_t h,
+                                      sc7a20h_wakeup_cb_t cb,
+                                      void *user_ctx);
 
-    /// Install a user-space callback fired when motion is detected.
-    /// The callback runs in caller context, not from an ISR.
-    void SetWakeupCallback(WakeupCallback callback);
+/* ========================================================================
+ * Power management / runtime tuning
+ * ====================================================================== */
 
-    // ===================== Power management ======================
+esp_err_t sc7a20h_enter_power_down(sc7a20h_handle_t h);
+esp_err_t sc7a20h_exit_power_down(sc7a20h_handle_t h);
 
-    /// Enter low-power mode (output disabled, < 2 uA).
-    esp_err_t EnterPowerDown();
+esp_err_t sc7a20h_set_range(sc7a20h_handle_t h, sc7a20h_range_t range);
+esp_err_t sc7a20h_set_odr(sc7a20h_handle_t h, sc7a20h_odr_t odr);
 
-    /// Resume from low-power mode (restores the previously configured ODR).
-    esp_err_t ExitPowerDown();
+/* ========================================================================
+ * Deep-sleep wakeup
+ * ====================================================================== */
 
-    // ===================== Deep-sleep wakeup =====================
+/**
+ * @brief One-call deep-sleep wakeup setup using EXT1.
+ *
+ * After this, calling @c esp_deep_sleep_start() will let the MCU wake when
+ * the SC7A20H INT1 line goes low. Internally configures RTC GPIO pull-up
+ * and registers the EXT1 wakeup source.
+ *
+ * @param int1_gpio GPIO connected to SC7A20H INT1 (must be RTC-capable).
+ */
+esp_err_t sc7a20h_config_deep_sleep_wakeup(sc7a20h_handle_t h, gpio_num_t int1_gpio);
 
-    /**
-     * @brief One-call deep-sleep wakeup setup using EXT1.
-     *
-     * After invoking this, calling @c esp_deep_sleep_start() will let the
-     * MCU wake when the SC7A20H INT1 line goes low. This routine configures
-     * the RTC GPIO pull-up and registers the EXT1 wakeup source for you.
-     *
-     * @param int1_gpio GPIO connected to SC7A20H INT1 (must be an RTC-capable GPIO).
-     */
-    esp_err_t ConfigDeepSleepWakeup(gpio_num_t int1_gpio);
+/* ========================================================================
+ * Convenience
+ * ====================================================================== */
 
-    // ===================== Convenience ===========================
+/**
+ * @brief Create + initialise + enable motion detection in one call.
+ *
+ * Typical "pick-up to wake" use case. Installs a built-in 500 ms debounce
+ * log callback if you don't pass your own afterwards.
+ */
+esp_err_t sc7a20h_create_with_motion_detection(i2c_master_bus_handle_t i2c_bus,
+                                               const sc7a20h_config_t *cfg,
+                                               const sc7a20h_motion_config_t *mcfg,
+                                               sc7a20h_handle_t *out);
 
-    /**
-     * @brief One-call init + motion-detect with built-in 500 ms debounce.
-     *
-     * Equivalent to: @ref Initialize() + @ref SetMotionDetection(true)
-     * with a default debounced log callback. Recommended for board-level
-     * "pickup-to-wake" use cases.
-     *
-     * @param config Motion-detect configuration; pass nullptr to use defaults.
-     */
-    esp_err_t InitWithMotionDetection(const Sc7a20hMotionConfig* config = nullptr);
-
-    // ===================== Runtime configuration =================
-
-    /// Change the full-scale range at runtime.
-    esp_err_t SetRange(Sc7a20hRange range);
-
-    /// Change the output data rate at runtime.
-    esp_err_t SetOdr(Sc7a20hOdr odr);
-
-private:
-    i2c_master_dev_handle_t i2c_dev_ = nullptr;
-    bool initialized_ = false;
-    Sc7a20hRange range_ = Sc7a20hRange::kRange4G;
-    Sc7a20hOdr odr_ = Sc7a20hOdr::kOdr100Hz;
-    WakeupCallback wakeup_callback_;
-
-    // Low-level register access.
-    esp_err_t WriteReg(uint8_t reg, uint8_t value);
-    esp_err_t ReadReg(uint8_t reg, uint8_t& value);
-    esp_err_t ReadRegs(uint8_t reg, uint8_t* buffer, size_t length);
-
-    // Sensitivity (mg/LSB) for the currently selected range.
-    float GetSensitivity() const;
-};
-
-#endif // SC7A20H_H
+#ifdef __cplusplus
+}  /* extern "C" */
+#endif

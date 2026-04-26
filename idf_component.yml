@@ -1,4 +1,4 @@
-version: "1.0.1"
+version: "2.0.0"
 description: "SC7A20H 3-axis accelerometer driver with motion detection, deep-sleep wakeup and LIS2DH12-compatible register layout (Silan Microelectronics)"
 url: "https://github.com/mydazy/esp_sc7a20h"
 repository: "https://github.com/mydazy/esp_sc7a20h.git"
