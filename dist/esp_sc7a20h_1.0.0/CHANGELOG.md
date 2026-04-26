@@ -4,23 +4,6 @@ All notable changes to **esp_sc7a20h** will be documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.0.1] - 2026-04-26
-
-### Changed
-
-- All in-source comments and log strings translated from Chinese to English for global readability.
-- Header documentation rewritten in English Doxygen style.
-
-### Added
-
-- `examples/basic_motion_wakeup/` — minimal pickup-to-wake project demonstrating I2C init, motion detection, deep-sleep wake-up.
-- `.clang-format` — coding style based on Google C++ with ESP-IDF conventions (4-space indent, 100-column).
-- GitHub Actions multi-IDF-version build matrix (5.3 / 5.4 / 5.5) for the example.
-
-### Notes
-
-- No API or wire-format changes. Source-compatible drop-in for v1.0.0.
-
 ## [1.0.0] - 2026-04-26
 
 ### Added

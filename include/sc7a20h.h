@@ -8,55 +8,57 @@
 #include <cstdint>
 
 /**
- * @brief SC7A20H 三轴加速度计驱动（士兰微 Silan）
+ * @brief SC7A20H 3-axis accelerometer driver (Silan Microelectronics).
  *
- * 寄存器体系与 ST LIS2DH12/LIS3DH 兼容。
- * I2C 地址: 0x18 (SA0=0) 或 0x19 (SA0=1，MyDazy 默认)。
+ * Register-compatible with ST LIS2DH12 / LIS3DH.
+ * I2C address: 0x18 (SA0 = GND) or 0x19 (SA0 = VCC, default).
  *
- * 功能: 加速度读取 / 运动检测中断 / 敲击检测 / 低功耗模式
+ * Capabilities: acceleration readout, motion-detect interrupt,
+ * deep-sleep wakeup, low-power mode.
  */
 
-/// 三轴原始数据（12-bit 左对齐，需右移 4 位）
+/// Raw 3-axis sample (12-bit, left-aligned in source registers; this struct
+/// already holds the right-shifted, sign-extended value).
 struct Sc7a20hRawAcce {
     int16_t x;
     int16_t y;
     int16_t z;
 };
 
-/// 三轴加速度值（单位: mg, 毫重力加速度）
+/// Scaled 3-axis acceleration in milli-g (mg).
 struct Sc7a20hAcce {
     float x;
     float y;
     float z;
 };
 
-/// 量程选择
+/// Full-scale range selection.
 enum class Sc7a20hRange : uint8_t {
-    kRange2G  = 0x00,  // ±2g (默认)
-    kRange4G  = 0x10,  // ±4g
-    kRange8G  = 0x20,  // ±8g
-    kRange16G = 0x30,  // ±16g
+    kRange2G  = 0x00,  ///< +/- 2 g (default on power-up)
+    kRange4G  = 0x10,  ///< +/- 4 g
+    kRange8G  = 0x20,  ///< +/- 8 g
+    kRange16G = 0x30,  ///< +/- 16 g
 };
 
-/// 输出数据率
+/// Output data rate.
 enum class Sc7a20hOdr : uint8_t {
-    kPowerDown = 0x00,  // 关闭
-    kOdr1Hz    = 0x10,  // 1 Hz (超低功耗)
-    kOdr10Hz   = 0x20,  // 10 Hz (低功耗)
-    kOdr25Hz   = 0x30,  // 25 Hz
-    kOdr50Hz   = 0x40,  // 50 Hz
-    kOdr100Hz  = 0x50,  // 100 Hz (默认)
-    kOdr200Hz  = 0x60,  // 200 Hz
-    kOdr400Hz  = 0x70,  // 400 Hz
+    kPowerDown = 0x00,  ///< Power-down
+    kOdr1Hz    = 0x10,  ///< 1   Hz (ultra-low power)
+    kOdr10Hz   = 0x20,  ///< 10  Hz (low power)
+    kOdr25Hz   = 0x30,  ///< 25  Hz
+    kOdr50Hz   = 0x40,  ///< 50  Hz
+    kOdr100Hz  = 0x50,  ///< 100 Hz (driver default)
+    kOdr200Hz  = 0x60,  ///< 200 Hz
+    kOdr400Hz  = 0x70,  ///< 400 Hz
 };
 
-/// 运动检测配置
+/// Motion-detection configuration.
 struct Sc7a20hMotionConfig {
-    uint8_t threshold  = 0x08;  // 中断阈值 (步进: range/128, 默认 ~250mg@4g)
-    uint8_t duration   = 0x02;  // 持续时间 (步进: 1/ODR)
-    bool    enable_x   = true;
-    bool    enable_y   = true;
-    bool    enable_z   = true;
+    uint8_t threshold = 0x08;  ///< Threshold (step = full-scale/128, default ~250 mg @ +/-4 g)
+    uint8_t duration  = 0x02;  ///< Duration  (step = 1/ODR samples)
+    bool    enable_x  = true;  ///< Detect motion on X axis
+    bool    enable_y  = true;  ///< Detect motion on Y axis
+    bool    enable_z  = true;  ///< Detect motion on Z axis
 };
 
 class Sc7a20h {
@@ -64,99 +66,99 @@ public:
     using WakeupCallback = std::function<void()>;
 
     /**
-     * @brief 构造函数
-     * @param i2c_bus I2C 总线句柄
-     * @param addr    I2C 地址 (默认 0x19)
+     * @brief Construct and register the I2C device.
+     * @param i2c_bus I2C master bus handle.
+     * @param addr    7-bit I2C address (default 0x19).
      */
     Sc7a20h(i2c_master_bus_handle_t i2c_bus, uint8_t addr = 0x19);
     ~Sc7a20h();
 
-    // 禁止拷贝
     Sc7a20h(const Sc7a20h&) = delete;
     Sc7a20h& operator=(const Sc7a20h&) = delete;
 
-    // ========== 设备管理 ==========
+    // ===================== Device management =====================
 
     /**
-     * @brief 初始化传感器（校验 WHO_AM_I + 配置默认参数）
-     * @param range 量程 (默认 ±4g)
-     * @param odr   数据率 (默认 100Hz)
-     * @return ESP_OK 成功, ESP_ERR_NOT_FOUND 设备未找到
+     * @brief Verify WHO_AM_I and apply default configuration.
+     * @param range Full-scale range (default +/- 4 g).
+     * @param odr   Output data rate (default 100 Hz).
+     * @return ESP_OK on success;
+     *         ESP_ERR_NOT_FOUND if WHO_AM_I mismatch;
+     *         ESP_ERR_INVALID_STATE if I2C device registration failed.
      */
     esp_err_t Initialize(Sc7a20hRange range = Sc7a20hRange::kRange4G,
                          Sc7a20hOdr odr = Sc7a20hOdr::kOdr100Hz);
 
-    /// 检查传感器是否已初始化
+    /// Whether @ref Initialize() has succeeded.
     bool IsInitialized() const { return initialized_; }
 
-    // ========== 数据读取 ==========
+    // ===================== Data readout ==========================
 
     /**
-     * @brief 读取原始加速度数据
-     * @param[out] raw 原始值（12-bit 有符号，已右移）
-     * @return ESP_OK 成功
+     * @brief Read raw acceleration sample.
+     * @param[out] raw Raw value (12-bit signed, already right-shifted).
      */
     esp_err_t GetRawAcce(Sc7a20hRawAcce& raw);
 
     /**
-     * @brief 读取加速度值（mg 单位）
-     * @param[out] acce 加速度值
-     * @return ESP_OK 成功
+     * @brief Read acceleration scaled to milli-g.
+     * @param[out] acce Scaled value.
      */
     esp_err_t GetAcce(Sc7a20hAcce& acce);
 
-    // ========== 运动检测 ==========
+    // ===================== Motion detection ======================
 
     /**
-     * @brief 启用/禁用运动检测中断
-     * @param enable 是否启用
-     * @param config 检测配置 (nullptr 使用默认)
-     * @return ESP_OK 成功
+     * @brief Enable or disable the motion-detect interrupt on INT1.
+     * @param enable true to enable, false to disable.
+     * @param config Detection parameters; pass nullptr to use defaults.
      */
     esp_err_t SetMotionDetection(bool enable, const Sc7a20hMotionConfig* config = nullptr);
 
-    /// 设置唤醒回调（运动检测触发时调用）
+    /// Install a user-space callback fired when motion is detected.
+    /// The callback runs in caller context, not from an ISR.
     void SetWakeupCallback(WakeupCallback callback);
 
-    // ========== 电源管理 ==========
+    // ===================== Power management ======================
 
-    /// 进入低功耗模式（关闭输出）
+    /// Enter low-power mode (output disabled, < 2 uA).
     esp_err_t EnterPowerDown();
 
-    /// 退出低功耗模式（恢复之前的 ODR）
+    /// Resume from low-power mode (restores the previously configured ODR).
     esp_err_t ExitPowerDown();
 
-    // ========== 深睡唤醒 ==========
+    // ===================== Deep-sleep wakeup =====================
 
     /**
-     * @brief 一键配置深度睡眠唤醒（EXT1 方式）
+     * @brief One-call deep-sleep wakeup setup using EXT1.
      *
-     * 调用此方法后进入 deep sleep，SC7A20H 的 INT1 引脚电平变化将唤醒主 CPU。
-     * 内部自动配置 RTC GPIO 上拉和 EXT1 唤醒源。
+     * After invoking this, calling @c esp_deep_sleep_start() will let the
+     * MCU wake when the SC7A20H INT1 line goes low. This routine configures
+     * the RTC GPIO pull-up and registers the EXT1 wakeup source for you.
      *
-     * @param int1_gpio SC7A20H INT1 中断引脚（必须是 RTC GPIO）
-     * @return ESP_OK 成功
+     * @param int1_gpio GPIO connected to SC7A20H INT1 (must be an RTC-capable GPIO).
      */
     esp_err_t ConfigDeepSleepWakeup(gpio_num_t int1_gpio);
 
-    // ========== 便捷初始化 ==========
+    // ===================== Convenience ===========================
 
     /**
-     * @brief 一键初始化 + 启用运动检测（board 层推荐用法）
+     * @brief One-call init + motion-detect with built-in 500 ms debounce.
      *
-     * 等效于: Initialize() + SetMotionDetection(true) + 500ms 防抖回调
+     * Equivalent to: @ref Initialize() + @ref SetMotionDetection(true)
+     * with a default debounced log callback. Recommended for board-level
+     * "pickup-to-wake" use cases.
      *
-     * @param config 运动检测配置 (nullptr 使用默认)
-     * @return ESP_OK 成功
+     * @param config Motion-detect configuration; pass nullptr to use defaults.
      */
     esp_err_t InitWithMotionDetection(const Sc7a20hMotionConfig* config = nullptr);
 
-    // ========== 配置 ==========
+    // ===================== Runtime configuration =================
 
-    /// 设置量程
+    /// Change the full-scale range at runtime.
     esp_err_t SetRange(Sc7a20hRange range);
 
-    /// 设置输出数据率
+    /// Change the output data rate at runtime.
     esp_err_t SetOdr(Sc7a20hOdr odr);
 
 private:
@@ -166,12 +168,12 @@ private:
     Sc7a20hOdr odr_ = Sc7a20hOdr::kOdr100Hz;
     WakeupCallback wakeup_callback_;
 
-    // I2C 寄存器操作
+    // Low-level register access.
     esp_err_t WriteReg(uint8_t reg, uint8_t value);
     esp_err_t ReadReg(uint8_t reg, uint8_t& value);
     esp_err_t ReadRegs(uint8_t reg, uint8_t* buffer, size_t length);
 
-    // 量程对应的灵敏度 (mg/LSB)
+    // Sensitivity (mg/LSB) for the currently selected range.
     float GetSensitivity() const;
 };
 

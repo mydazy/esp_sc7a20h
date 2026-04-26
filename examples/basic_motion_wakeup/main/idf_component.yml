@@ -1,0 +1,3 @@
+## Example dependencies (resolved from the Espressif Component Registry)
+dependencies:
+  mydazy/esp_sc7a20h: "^1.0.0"
